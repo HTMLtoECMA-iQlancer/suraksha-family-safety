@@ -20,12 +20,20 @@ export function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState<'form' | 'demo' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [demoAvailable, setDemoAvailable] = useState(false);
 
   const from = (location.state as { from?: string } | null)?.from ?? '/';
 
   useEffect(() => {
     if (status === 'authed') navigate(from, { replace: true });
   }, [status, navigate, from]);
+
+  useEffect(() => {
+    void fetch('/api/config')
+      .then((res) => (res.ok ? (res.json() as Promise<{ demoMode?: boolean }>) : null))
+      .then((config) => setDemoAvailable(Boolean(config?.demoMode)))
+      .catch(() => setDemoAvailable(false));
+  }, []);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -236,16 +244,20 @@ export function LoginPage() {
             </Button>
           </form>
 
-          <div className="auth-divider">
-            <span>or</span>
-          </div>
+          {demoAvailable ? (
+            <>
+              <div className="auth-divider">
+                <span>or</span>
+              </div>
 
-          <Button variant="soft" block onClick={() => void tryDemo()} loading={busy === 'demo'} icon={<Sparkles size={17} />}>
-            {t('auth.demo')}
-          </Button>
-          <p className="demo-hint">
-            {t('auth.demoHint')} <span className="demo-cred">demo@suraksha.app · Demo1234!</span>
-          </p>
+              <Button variant="soft" block onClick={() => void tryDemo()} loading={busy === 'demo'} icon={<Sparkles size={17} />}>
+                {t('auth.demo')}
+              </Button>
+              <p className="demo-hint">
+                {t('auth.demoHint')} <span className="demo-cred">demo@suraksha.app · Demo1234!</span>
+              </p>
+            </>
+          ) : null}
 
           <p className="auth-privacy">
             <ShieldCheck size={15} /> {t('auth.privacyNote')}
