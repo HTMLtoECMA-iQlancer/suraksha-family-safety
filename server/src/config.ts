@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 
 function loadDotEnv(): void {
@@ -60,7 +61,9 @@ export const env = {
   locationRetentionDays: Number(process.env.LOCATION_RETENTION_DAYS ?? 30),
   eventRetentionDays: Number(process.env.EVENT_RETENTION_DAYS ?? 180),
   fcmServiceAccountJson: process.env.FCM_SERVICE_ACCOUNT_JSON ?? '',
-  webDistPath: resolve(process.cwd(), 'parent-app/dist'),
+  webDistPath:
+    process.env.WEB_DIST_PATH?.trim() ||
+    resolve(fileURLToPath(new URL('../../parent-app/dist', import.meta.url))),
 };
 
 export type Env = typeof env;
