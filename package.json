@@ -1,0 +1,27 @@
+{
+  "name": "suraksha-family-safety",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Suraksha - consent-based parent-child safety and device management platform",
+  "workspaces": [
+    "shared",
+    "server",
+    "parent-app"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,green \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm --workspace server run dev",
+    "dev:web": "npm --workspace parent-app run dev",
+    "build": "npm --workspace shared run build && npm --workspace parent-app run build && npm --workspace server run build",
+    "start": "npm --workspace server run start",
+    "test": "npm --workspace server run test && npm --workspace parent-app run test",
+    "typecheck": "npm --workspace server run typecheck && npm --workspace parent-app run typecheck",
+    "seed": "npm --workspace server run seed"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,0 +1,1791 @@
+openapi: 3.1.0
+info:
+  title: Suraksha Family Safety API
+  version: 1.0.0
+  description: |
+    Consent-based parent–child safety API. Parent endpoints use a user access token;
+    `/child/*` device endpoints use a child device token. Camera, audio and screen
+    sessions require child approval and are relayed only while approved or active.
+    The child may enable quick check-ins, a standing consent that auto-approves camera
+    and audio requests only; screen sharing always needs the child's own Android
+    screen-capture consent.
+    All errors use `{ "error": { "code", "message", "details?" } }`.
+servers:
+  - url: http://localhost:4000/api
+    description: Local development
+tags:
+  - name: Public
+  - name: Auth
+  - name: Account
+  - name: Families
+  - name: Devices
+  - name: Pairing
+  - name: Sessions
+  - name: Location
+  - name: Child device
+  - name: Notifications
+security:
+  - parentToken: []
+
+paths:
+  /health:
+    get:
+      tags: [Public]
+      summary: Service health and database kind
+      security: []
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  db: { type: string, enum: [pglite, postgres] }
+                  version: { type: string }
+                  time: { type: string, format: date-time }
+  /config:
+    get:
+      tags: [Public]
+      summary: Public client configuration (demo mode, TURN credentials)
+      security: []
+      responses:
+        '200':
+          description: Configuration
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppConfig' }
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Create an account and its first family (owner)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, displayName]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8, description: At least one letter and one number }
+                displayName: { type: string, maxLength: 80 }
+                phone: { type: [string, 'null'], maxLength: 30 }
+                locale: { type: string, enum: [en, gu], default: en }
+                acceptTerms: { type: boolean, enum: [true] }
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthPayload' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Sign in with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthPayload' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate a user refresh token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshBody' }
+      responses:
+        '200':
+          description: New tokens and profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthPayload' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke a refresh token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshBody' }
+      responses:
+        '204': { description: Revoked }
+
+  /me:
+    get:
+      tags: [Account]
+      summary: Current user and families
+      responses:
+        '200':
+          description: Profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+                  families:
+                    type: array
+                    items: { $ref: '#/components/schemas/Family' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [Account]
+      summary: Update display name, phone or locale
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayName: { type: string, maxLength: 80 }
+                phone: { type: [string, 'null'], maxLength: 30 }
+                locale: { type: string, enum: [en, gu] }
+      responses:
+        '200':
+          description: Updated profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+                  families:
+                    type: array
+                    items: { $ref: '#/components/schemas/Family' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    delete:
+      tags: [Account]
+      summary: Delete the account (re-authenticate with password)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        '204': { description: Account anonymised or removed }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /me/password:
+    post:
+      tags: [Account]
+      summary: Change password and rotate all sessions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 8 }
+      responses:
+        '200':
+          description: New token pair
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens: { $ref: '#/components/schemas/Tokens' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /me/push-token:
+    post:
+      tags: [Account]
+      summary: Register a push token for this user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PushTokenBody' }
+      responses:
+        '204': { description: Saved }
+  /me/export:
+    get:
+      tags: [Account]
+      summary: Export all account and family data as JSON
+      responses:
+        '200':
+          description: Downloadable JSON export
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /families:
+    get:
+      tags: [Families]
+      summary: List families for the signed-in user
+      responses:
+        '200':
+          description: Families
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  families:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/Family'
+                        - type: object
+                          properties:
+                            memberCount: { type: integer }
+                            deviceCount: { type: integer }
+    post:
+      tags: [Families]
+      summary: Create a family (creator becomes owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 80 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  family: { $ref: '#/components/schemas/Family' }
+  /families/{familyId}/members:
+    get:
+      tags: [Families]
+      summary: List members (excluding revoked)
+      parameters: [{ $ref: '#/components/parameters/FamilyId' }]
+      responses:
+        '200':
+          description: Members
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members:
+                    type: array
+                    items: { $ref: '#/components/schemas/Member' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /families/{familyId}/members/{memberId}:
+    patch:
+      tags: [Families]
+      summary: Change a member role (owner only)
+      parameters:
+        - { $ref: '#/components/parameters/FamilyId' }
+        - { $ref: '#/components/parameters/MemberId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [parent, caregiver] }
+      responses:
+        '200':
+          description: Updated member
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  member: { $ref: '#/components/schemas/Member' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Families]
+      summary: Remove a member or leave the family
+      parameters:
+        - { $ref: '#/components/parameters/FamilyId' }
+        - { $ref: '#/components/parameters/MemberId' }
+      responses:
+        '204': { description: Removed }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /families/{familyId}/invites:
+    post:
+      tags: [Families]
+      summary: Invite a parent or caregiver by email
+      parameters: [{ $ref: '#/components/parameters/FamilyId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                role: { type: string, enum: [parent, caregiver], default: caregiver }
+                displayName: { type: string, maxLength: 80 }
+      responses:
+        '201':
+          description: Invite code created (show once)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invite:
+                    type: object
+                    properties:
+                      email: { type: string }
+                      role: { type: string }
+                      code: { type: string, example: A1B2C3 }
+                      expiresAt: { type: string, format: date-time }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /invites/accept:
+    post:
+      tags: [Families]
+      summary: Accept a family invite (email must match)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        '200':
+          description: Joined family
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  family: { $ref: '#/components/schemas/Family' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /families/{familyId}/devices:
+    get:
+      tags: [Families]
+      summary: List linked devices in a family
+      parameters: [{ $ref: '#/components/parameters/FamilyId' }]
+      responses:
+        '200':
+          description: Devices
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items: { $ref: '#/components/schemas/Device' }
+  /families/{familyId}/access:
+    get:
+      tags: [Families]
+      summary: Caregiver and device access summary
+      parameters: [{ $ref: '#/components/parameters/FamilyId' }]
+      responses:
+        '200':
+          description: Access matrix
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /families/{familyId}/audit:
+    get:
+      tags: [Families]
+      summary: Family audit log (latest 200)
+      parameters: [{ $ref: '#/components/parameters/FamilyId' }]
+      responses:
+        '200':
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  audit:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuditEntry' }
+
+  /devices:
+    get:
+      tags: [Devices]
+      summary: List all linked devices across the user's families
+      responses:
+        '200':
+          description: Devices
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items: { $ref: '#/components/schemas/Device' }
+  /devices/{deviceId}:
+    get:
+      tags: [Devices]
+      summary: Device detail
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      responses:
+        '200':
+          description: Device
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device: { $ref: '#/components/schemas/Device' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Devices]
+      summary: Rename device or child
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 80 }
+                childName: { type: string, maxLength: 60 }
+      responses:
+        '200':
+          description: Updated device
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device: { $ref: '#/components/schemas/Device' }
+    delete:
+      tags: [Devices]
+      summary: Unlink a device and revoke its tokens
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      responses:
+        '204': { description: Unlinked }
+  /devices/{deviceId}/permissions:
+    get:
+      tags: [Devices]
+      summary: Last reported Android permission state
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      responses:
+        '200':
+          description: Permissions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  permissions:
+                    type: array
+                    items: { $ref: '#/components/schemas/PermissionState' }
+  /devices/{deviceId}/policies:
+    get:
+      tags: [Devices]
+      summary: All policies for a device
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      responses:
+        '200':
+          description: Policies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policies: { $ref: '#/components/schemas/PolicyMap' }
+  /devices/{deviceId}/policies/{kind}:
+    put:
+      tags: [Devices]
+      summary: Replace one policy
+      description: |
+        Policy kinds: `screen_time`, `app_rules`, `location`, `safe_browsing`,
+        `notifications`, `supervision`, `instant_block`.
+      parameters:
+        - { $ref: '#/components/parameters/DeviceId' }
+        - name: kind
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [screen_time, app_rules, location, safe_browsing, notifications, supervision, instant_block]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Updated policy map
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policies: { $ref: '#/components/schemas/PolicyMap' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /devices/{deviceId}/focus-lock:
+    post:
+      tags: [Devices]
+      summary: Start a transparent focus lock
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [minutes]
+              properties:
+                minutes: { type: integer, minimum: 1, maximum: 720 }
+      responses:
+        '200':
+          description: Focus lock started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy:
+                    type: object
+                    properties:
+                      active: { type: boolean }
+                      until: { type: [string, 'null'], format: date-time }
+    delete:
+      tags: [Devices]
+      summary: End a focus lock
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      responses:
+        '200':
+          description: Focus lock ended
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /devices/{deviceId}/overview:
+    get:
+      tags: [Devices]
+      summary: Dashboard bundle (device, policies, usage, events, location, geofences, sessions)
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      responses:
+        '200':
+          description: Overview
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /devices/{deviceId}/events:
+    get:
+      tags: [Devices]
+      summary: Safety events for a device
+      parameters:
+        - { $ref: '#/components/parameters/DeviceId' }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: severity
+          in: query
+          schema: { type: string, enum: [info, warning, critical] }
+      responses:
+        '200':
+          description: Events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: '#/components/schemas/Event' }
+  /devices/{deviceId}/audit:
+    get:
+      tags: [Devices]
+      summary: Device audit log (latest 100)
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      responses:
+        '200':
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  audit:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuditEntry' }
+  /devices/{deviceId}/usage:
+    get:
+      tags: [Devices]
+      summary: Daily app usage
+      parameters:
+        - { $ref: '#/components/parameters/DeviceId' }
+        - name: days
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 30, default: 7 }
+      responses:
+        '200':
+          description: Usage by day
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  days:
+                    type: array
+                    items: { $ref: '#/components/schemas/UsageDay' }
+                  totalMinutes: { type: integer }
+  /devices/{deviceId}/apps:
+    get:
+      tags: [Devices]
+      summary: Latest app totals with rule configuration
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      responses:
+        '200':
+          description: Apps
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /pairings:
+    post:
+      tags: [Pairing]
+      summary: Create a pairing code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [childName]
+              properties:
+                childName: { type: string, maxLength: 60 }
+                familyId: { type: string, format: uuid, description: Defaults to the user's first owner/parent family }
+      responses:
+        '201':
+          description: Pairing created; code is returned once
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pairing: { $ref: '#/components/schemas/Pairing' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    get:
+      tags: [Pairing]
+      summary: Open pairings (waiting_child / awaiting_parent)
+      responses:
+        '200':
+          description: Pairings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pairings:
+                    type: array
+                    items: { $ref: '#/components/schemas/Pairing' }
+  /pairings/{pairingId}:
+    get:
+      tags: [Pairing]
+      summary: Pairing status
+      parameters: [{ $ref: '#/components/parameters/PairingId' }]
+      responses:
+        '200':
+          description: Pairing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pairing: { $ref: '#/components/schemas/Pairing' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Pairing]
+      summary: Cancel a pending pairing
+      parameters: [{ $ref: '#/components/parameters/PairingId' }]
+      responses:
+        '204': { description: Cancelled }
+  /pairings/{pairingId}/approve:
+    post:
+      tags: [Pairing]
+      summary: Approve the child's pairing and link the device
+      parameters: [{ $ref: '#/components/parameters/PairingId' }]
+      responses:
+        '200':
+          description: Linked device
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device: { $ref: '#/components/schemas/Device' }
+                  pairing: { $ref: '#/components/schemas/Pairing' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /devices/{deviceId}/sessions:
+    get:
+      tags: [Devices]
+      summary: Session history for a device (latest 100)
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      responses:
+        '200':
+          description: Sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: '#/components/schemas/Session' }
+    post:
+      tags: [Sessions]
+      summary: Request a camera, audio or screen session (child approval, or quick check-in for camera/audio)
+      description: |
+        Without quick check-ins the session is created as `pending` until the child
+        responds. If the child enabled quick check-ins for this kind, a camera or audio
+        request is created as `approved` with `trusted: true` and the child app starts
+        it immediately. Screen requests are never auto-approved.
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { type: string, enum: [camera, audio, screen] }
+                reason: { type: string, maxLength: 160 }
+      responses:
+        '201':
+          description: Pending session, or approved immediately under quick check-ins
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { $ref: '#/components/schemas/Session' }
+        '409': { $ref: '#/components/responses/Conflict', description: Device offline or another session already open }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /sessions/{sessionId}:
+    get:
+      tags: [Sessions]
+      summary: Session detail (creating parent only)
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      responses:
+        '200':
+          description: Session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { $ref: '#/components/schemas/Session' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /sessions/{sessionId}/cancel:
+    post:
+      tags: [Sessions]
+      summary: Cancel a pending request
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      responses:
+        '200':
+          description: Cancelled session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { $ref: '#/components/schemas/Session' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /sessions/{sessionId}/end:
+    post:
+      tags: [Sessions]
+      summary: End an approved or active session as parent
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 160 }
+      responses:
+        '200':
+          description: Ended session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { $ref: '#/components/schemas/Session' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /devices/{deviceId}/location:
+    get:
+      tags: [Location]
+      summary: Latest location and sharing policy
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      responses:
+        '200':
+          description: Latest point
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  location:
+                    oneOf:
+                      - $ref: '#/components/schemas/LocationPoint'
+                      - type: 'null'
+                  sharing: { type: object, additionalProperties: true }
+  /devices/{deviceId}/locations:
+    get:
+      tags: [Location]
+      summary: Location history
+      parameters:
+        - { $ref: '#/components/parameters/DeviceId' }
+        - name: hours
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 720, default: 24 }
+      responses:
+        '200':
+          description: Points in ascending time order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  points:
+                    type: array
+                    items: { $ref: '#/components/schemas/LocationPoint' }
+  /devices/{deviceId}/geofences:
+    get:
+      tags: [Location]
+      summary: List geofences
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      responses:
+        '200':
+          description: Geofences
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  geofences:
+                    type: array
+                    items: { $ref: '#/components/schemas/Geofence' }
+    post:
+      tags: [Location]
+      summary: Create a geofence
+      parameters: [{ $ref: '#/components/parameters/DeviceId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GeofenceInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  geofence: { $ref: '#/components/schemas/Geofence' }
+  /geofences/{geofenceId}:
+    patch:
+      tags: [Location]
+      summary: Update a geofence
+      parameters: [{ $ref: '#/components/parameters/GeofenceId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GeofenceInput' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  geofence: { $ref: '#/components/schemas/Geofence' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Location]
+      summary: Delete a geofence
+      parameters: [{ $ref: '#/components/parameters/GeofenceId' }]
+      responses:
+        '204': { description: Deleted }
+
+  /child/pair:
+    post:
+      tags: [Child device]
+      summary: Child enters a pairing code and registers the device
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, minLength: 6, maxLength: 6 }
+                childName: { type: string, maxLength: 60 }
+                model: { type: string, maxLength: 120 }
+                platform: { type: string, enum: [android, web-preview, ios-preview], default: android }
+                osVersion: { type: string, maxLength: 40 }
+                appVersion: { type: string, maxLength: 40 }
+      responses:
+        '201':
+          description: Waiting for parent approval
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deviceId: { type: string }
+                  pairingId: { type: string }
+                  status: { type: string, enum: [awaiting_parent] }
+                  device: { $ref: '#/components/schemas/Device' }
+                  tokens: { $ref: '#/components/schemas/Tokens' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /child/token/refresh:
+    post:
+      tags: [Child device]
+      summary: Rotate a device refresh token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshBody' }
+      responses:
+        '200':
+          description: New tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens: { $ref: '#/components/schemas/Tokens' }
+                  device: { $ref: '#/components/schemas/Device' }
+  /child/me:
+    get:
+      tags: [Child device]
+      summary: Child device state (device, family, policies, open sessions, parents, pairing)
+      security: [{ deviceToken: [] }]
+      responses:
+        '200':
+          description: Device state
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /child/trusted-access:
+    get:
+      tags: [Child device]
+      summary: Read the child's quick check-in consent
+      security: [{ deviceToken: [] }]
+      responses:
+        '200':
+          description: Quick check-in state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trustedCheckIn: { $ref: '#/components/schemas/TrustedCheckIn' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Child device]
+      summary: Enable or disable quick check-ins (child only)
+      description: |
+        Writes a `trusted_check_in` consent record and an audit entry. Enabling covers
+        camera and audio only. Disabling ends any active trusted session with
+        `endedBy: child` and returns later requests to `pending`.
+      security: [{ deviceToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled, confirmed]
+              properties:
+                enabled: { type: boolean }
+                confirmed:
+                  type: boolean
+                  const: true
+                  description: The child confirmed the explanatory dialog
+      responses:
+        '200':
+          description: Updated quick check-in state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trustedCheckIn: { $ref: '#/components/schemas/TrustedCheckIn' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /child/heartbeat:
+    post:
+      tags: [Child device]
+      summary: Report battery, network, app version and permission snapshot
+      security: [{ deviceToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                battery: { type: [integer, 'null'], minimum: 0, maximum: 100 }
+                network: { type: [string, 'null'], maxLength: 40 }
+                appVersion: { type: string, maxLength: 40 }
+                permissionStatus:
+                  type: array
+                  items: { $ref: '#/components/schemas/PermissionState' }
+      responses:
+        '200':
+          description: Updated device
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device: { $ref: '#/components/schemas/Device' }
+  /child/permissions:
+    get:
+      tags: [Child device]
+      summary: Current permission snapshot
+      security: [{ deviceToken: [] }]
+      responses:
+        '200':
+          description: Permissions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  permissions:
+                    type: array
+                    items: { $ref: '#/components/schemas/PermissionState' }
+    post:
+      tags: [Child device]
+      summary: Update one permission state (may raise a revocation alert)
+      security: [{ deviceToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, granted]
+              properties:
+                key: { type: string, maxLength: 60 }
+                granted: { type: boolean }
+      responses:
+        '200':
+          description: Updated permissions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  permissions:
+                    type: array
+                    items: { $ref: '#/components/schemas/PermissionState' }
+  /child/session-requests:
+    get:
+      tags: [Child device]
+      summary: Session inbox (open sessions, or history when shared with the child)
+      security: [{ deviceToken: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [open] }
+      responses:
+        '200':
+          description: Sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: '#/components/schemas/Session' }
+  /child/session-requests/{sessionId}/respond:
+    post:
+      tags: [Child device]
+      summary: Approve or deny a session request (must be answered within 2 minutes)
+      security: [{ deviceToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approve]
+              properties:
+                approve: { type: boolean }
+                reason: { type: string, maxLength: 160 }
+      responses:
+        '200':
+          description: Approved or denied session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { $ref: '#/components/schemas/Session' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /child/sessions/{sessionId}/start:
+    post:
+      tags: [Child device]
+      summary: Start an approved session
+      security: [{ deviceToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      responses:
+        '200':
+          description: Active session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { $ref: '#/components/schemas/Session' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /child/sessions/{sessionId}/end:
+    post:
+      tags: [Child device]
+      summary: Stop an approved or active session from the child device
+      security: [{ deviceToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      responses:
+        '200':
+          description: 'Ended session (endedBy = child)'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { $ref: '#/components/schemas/Session' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /child/usage:
+    get:
+      tags: [Child device]
+      summary: Usage history for this device
+      security: [{ deviceToken: [] }]
+      responses:
+        '200':
+          description: Usage by day
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  days:
+                    type: array
+                    items: { $ref: '#/components/schemas/UsageDay' }
+    post:
+      tags: [Child device]
+      summary: Report per-app usage for a day
+      security: [{ deviceToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entries]
+              properties:
+                day: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+                entries:
+                  type: array
+                  maxItems: 500
+                  items:
+                    type: object
+                    required: [package, appName, minutes]
+                    properties:
+                      package: { type: string }
+                      appName: { type: string }
+                      category: { type: string, default: Other }
+                      minutes: { type: integer, minimum: 0, maximum: 1440 }
+      responses:
+        '200':
+          description: Stored total
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  day: { type: string }
+                  totalMinutes: { type: integer }
+  /child/events:
+    post:
+      tags: [Child device]
+      summary: Report a safety event from the child device
+      security: [{ deviceToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, title]
+              properties:
+                kind:
+                  type: string
+                  enum: [content.alert, browsing.blocked, driving.speed, system.notice, permission.revoked, usage.limit]
+                severity: { type: string, enum: [info, warning, critical], default: info }
+                title: { type: string, maxLength: 160 }
+                detail: { type: string, maxLength: 1000 }
+                metadata: { type: object, additionalProperties: true }
+      responses:
+        '201':
+          description: Recorded event
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  event: { $ref: '#/components/schemas/Event' }
+  /child/sos:
+    post:
+      tags: [Child device]
+      summary: Trigger an SOS alert with the latest location
+      security: [{ deviceToken: [] }]
+      responses:
+        '201':
+          description: Critical event created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  event: { $ref: '#/components/schemas/Event' }
+  /child/location:
+    post:
+      tags: [Child device]
+      summary: Report a location point (stores, broadcasts, evaluates geofences and speed)
+      security: [{ deviceToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lat, lng]
+              properties:
+                lat: { type: number, minimum: -90, maximum: 90 }
+                lng: { type: number, minimum: -180, maximum: 180 }
+                accuracy: { type: number, minimum: 0, maximum: 100000, default: 0 }
+                speed: { type: [number, 'null'], minimum: 0, maximum: 2000 }
+                recordedAt: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Result plus any triggered alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stored: { type: boolean }
+                  reason: { type: string }
+                  location: { $ref: '#/components/schemas/LocationPoint' }
+                  alerts:
+                    type: array
+                    items: { $ref: '#/components/schemas/Event' }
+  /child/access-history:
+    get:
+      tags: [Child device]
+      summary: Access history visible to the child (latest 100 audit entries)
+      security: [{ deviceToken: [] }]
+      responses:
+        '200':
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  audit:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuditEntry' }
+  /child/push-token:
+    post:
+      tags: [Child device]
+      summary: Register a push token for this device
+      security: [{ deviceToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PushTokenBody' }
+      responses:
+        '204': { description: Saved }
+  /child/unlink:
+    post:
+      tags: [Child device]
+      summary: Child unlinks this device (requires explicit confirmation)
+      security: [{ deviceToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm: { type: boolean, enum: [true] }
+      responses:
+        '204': { description: Unlinked and tokens revoked }
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: In-app notifications from safety events (latest 50)
+      parameters:
+        - name: familyId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Notifications
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notifications:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+
+  /demo/child-session:
+    post:
+      tags: [Public]
+      summary: Demo only — issue device tokens for the browser child preview
+      description: Returns 404 when demo mode is disabled.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Device tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens: { $ref: '#/components/schemas/Tokens' }
+                  device: { $ref: '#/components/schemas/Device' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /demo/status:
+    get:
+      tags: [Public]
+      summary: Demo mode flag
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  demoMode: { type: boolean }
+
+components:
+  securitySchemes:
+    parentToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User access token from `/auth/login`, `/auth/register` or `/auth/refresh`.
+    deviceToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Child device access token from `/child/pair` or `/child/token/refresh`.
+
+  parameters:
+    FamilyId:
+      name: familyId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    MemberId:
+      name: memberId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PairingId:
+      name: pairingId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    GeofenceId:
+      name: geofenceId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    BadRequest:
+      description: Validation failed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing, expired or invalid token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Not a member of this family or insufficient role
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Invalid state for this action
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooManyRequests:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: forbidden }
+            message: { type: string }
+            details: {}
+    Tokens:
+      type: object
+      required: [accessToken, refreshToken, accessExpiresAt, refreshExpiresAt]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        accessExpiresAt: { type: string, format: date-time }
+        refreshExpiresAt: { type: string, format: date-time }
+    RefreshBody:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken: { type: string }
+    PushTokenBody:
+      type: object
+      required: [token, platform]
+      properties:
+        token: { type: string }
+        platform: { type: string, enum: [android, web, ios] }
+    AuthPayload:
+      type: object
+      required: [user, families, tokens]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        families:
+          type: array
+          items: { $ref: '#/components/schemas/Family' }
+        tokens: { $ref: '#/components/schemas/Tokens' }
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        phone: { type: [string, 'null'] }
+        displayName: { type: string }
+        locale: { type: string, enum: [en, gu] }
+        emailVerified: { type: boolean }
+        createdAt: { type: string, format: date-time }
+    Family:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        role: { type: string, enum: [owner, parent, caregiver] }
+        createdAt: { type: string, format: date-time }
+    Member:
+      type: object
+      properties:
+        id: { type: string }
+        familyId: { type: string }
+        userId: { type: [string, 'null'] }
+        email: { type: string }
+        displayName: { type: string }
+        role: { type: string, enum: [owner, parent, caregiver] }
+        status: { type: string, enum: [active, invited, revoked] }
+        createdAt: { type: string, format: date-time }
+        acceptedAt: { type: [string, 'null'], format: date-time }
+    PermissionState:
+      type: object
+      properties:
+        key: { type: string }
+        label: { type: string }
+        granted: { type: boolean }
+        requiredFor: { type: string }
+        updatedAt: { type: [string, 'null'], format: date-time }
+    Device:
+      type: object
+      properties:
+        id: { type: string }
+        familyId: { type: string }
+        childName: { type: string }
+        name: { type: string }
+        model: { type: string }
+        platform: { type: string, enum: [android, web-preview, ios-preview] }
+        osVersion: { type: string }
+        appVersion: { type: string }
+        status: { type: string, enum: [online, offline] }
+        online: { type: boolean }
+        battery: { type: [integer, 'null'] }
+        network: { type: [string, 'null'] }
+        lastSeenAt: { type: [string, 'null'], format: date-time }
+        linkedAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+        permissions:
+          type: array
+          items: { $ref: '#/components/schemas/PermissionState' }
+        permissionHealth: { type: integer }
+        trustedCheckIn: { $ref: '#/components/schemas/TrustedCheckIn' }
+    TrustedCheckIn:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        kinds:
+          type: array
+          items: { type: string, enum: [camera, audio, screen] }
+          description: Kinds covered by the child's standing consent (camera/audio in this build)
+        updatedAt: { type: [string, 'null'], format: date-time }
+    Pairing:
+      type: object
+      properties:
+        id: { type: string }
+        code:
+          type: string
+          description: Returned only when the pairing is created
+        status: { type: string, enum: [waiting_child, awaiting_parent, linked, expired, cancelled] }
+        childName: { type: string }
+        expiresAt: { type: string, format: date-time }
+        device:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            model: { type: string }
+            platform: { type: string }
+    Session:
+      type: object
+      properties:
+        id: { type: string }
+        familyId: { type: string }
+        deviceId: { type: string }
+        parentUserId: { type: string }
+        parentName: { type: string }
+        kind: { type: string, enum: [camera, audio, screen] }
+        status: { type: string, enum: [pending, approved, active, ended, denied, expired, cancelled] }
+        reason: { type: string }
+        trusted:
+          type: boolean
+          description: Approved automatically under the child's quick check-in consent
+        createdAt: { type: string, format: date-time }
+        respondedAt: { type: [string, 'null'], format: date-time }
+        startedAt: { type: [string, 'null'], format: date-time }
+        endedAt: { type: [string, 'null'], format: date-time }
+        endedBy: { type: [string, 'null'], enum: [parent, child, system, null] }
+    Event:
+      type: object
+      properties:
+        id: { type: string }
+        familyId: { type: string }
+        deviceId: { type: [string, 'null'] }
+        kind: { type: string }
+        severity: { type: string, enum: [info, warning, critical] }
+        title: { type: string }
+        detail: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        occurredAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: string }
+        familyId: { type: string }
+        deviceId: { type: [string, 'null'] }
+        sessionId: { type: [string, 'null'] }
+        actorType: { type: string, enum: [parent, child, system, device] }
+        actorId: { type: [string, 'null'] }
+        action: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
+    LocationPoint:
+      type: object
+      properties:
+        id: { type: string }
+        deviceId: { type: string }
+        lat: { type: number }
+        lng: { type: number }
+        accuracy: { type: number }
+        speed: { type: [number, 'null'] }
+        recordedAt: { type: string, format: date-time }
+    GeofenceInput:
+      type: object
+      required: [name, lat, lng, radiusM]
+      properties:
+        name: { type: string, maxLength: 80 }
+        lat: { type: number, minimum: -90, maximum: 90 }
+        lng: { type: number, minimum: -180, maximum: 180 }
+        radiusM: { type: integer, minimum: 50, maximum: 5000 }
+        notifyOnEnter: { type: boolean, default: true }
+        notifyOnExit: { type: boolean, default: true }
+        enabled: { type: boolean, default: true }
+    Geofence:
+      allOf:
+        - $ref: '#/components/schemas/GeofenceInput'
+        - type: object
+          properties:
+            id: { type: string }
+            familyId: { type: string }
+            deviceId: { type: string }
+            createdAt: { type: string, format: date-time }
+    UsageEntry:
+      type: object
+      properties:
+        package: { type: string }
+        appName: { type: string }
+        category: { type: string }
+        minutes: { type: integer }
+    UsageDay:
+      type: object
+      properties:
+        day: { type: string, example: '2026-11-16' }
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/UsageEntry' }
+        totalMinutes: { type: integer }
+    PolicyMap:
+      type: object
+      description: Keyed by policy kind; shapes follow `shared/src/index.ts`.
+      properties:
+        screen_time: { type: object, additionalProperties: true }
+        app_rules: { type: object, additionalProperties: true }
+        location: { type: object, additionalProperties: true }
+        safe_browsing: { type: object, additionalProperties: true }
+        notifications: { type: object, additionalProperties: true }
+        supervision: { type: object, additionalProperties: true }
+        instant_block: { type: object, additionalProperties: true }
+    Notification:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        title: { type: string }
+        body: { type: string }
+        severity: { type: string, enum: [info, warning, critical] }
+        deviceId: { type: [string, 'null'] }
+        at: { type: string, format: date-time }
+        read: { type: boolean }
+    AppConfig:
+      type: object
+      properties:
+        demoMode: { type: boolean }
+        publicBaseUrl: { type: string }
+        turnUrls:
+          type: array
+          items: { type: string }
+        turnUsername: { type: string }
+        turnCredential: { type: string }
+        locationRetentionDays: { type: integer }

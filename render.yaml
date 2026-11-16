@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: suraksha-family
+    runtime: node
+    plan: free
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      - key: DEMO_MODE
+        value: "0"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: suraksha-db
+          property: connectionString
+      - key: TURN_URLS
+        value: turn:openrelay.metered.ca:80,turn:openrelay.metered.ca:443
+      - key: TURN_USERNAME
+        value: openrelayproject
+      - key: TURN_CREDENTIAL
+        value: openrelayproject
+
+databases:
+  - name: suraksha-db
+    plan: free
+    databaseName: suraksha
+    user: suraksha
