@@ -120,6 +120,21 @@ An earlier run exposed a real defect: ending a session from the OkHttp thread wh
 banner. Fixed with an idempotent `dispose()`, main-thread session finish, a re-entrancy
 guard, and a session-ID check in the RTC state callback. Re-verified as above.
 
+## Live deployment check (2026-11-16)
+
+Verified against the Render deployment at `https://suraksha-family.onrender.com`
+(PostgreSQL, `DEMO_MODE=0`):
+
+- `GET /api/health` → 200, `db: postgres`; `GET /` → 200 serving the built dashboard.
+- CORS preflight returns `access-control-allow-origin` for the production origin.
+- Registration (`POST /api/auth/register`) → 201; dashboard sign-in loads the device page.
+- Child APK built with `-PdefaultServerUrl=https://suraksha-family.onrender.com`,
+  installed on the emulator over mobile data: pairing code entry → "Almost paired",
+  parent approval → child shows "Connected to your family", device online, network
+  "Mobile data", and the parent dashboard shows the linked device with a live heartbeat.
+- The demo sign-in card is hidden when the API reports `demoMode: false`.
+- Test account and device removed afterwards (`DELETE /api/me` → 204).
+
 ## Not covered by automation
 
 - No Compose UI/instrumentation tests (`connectedAndroidTest`) and no Espresso flows;

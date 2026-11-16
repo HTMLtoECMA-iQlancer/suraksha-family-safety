@@ -44,6 +44,18 @@ outside production. Delete the `data/` directory and restart the API to reseed.
 Health check: `GET http://localhost:4000/api/health` → `{"status":"ok","db":"pglite",...}`.
 The API also serves the built dashboard from `parent-app/dist` in production.
 
+### Live deployment
+
+Production runs on Render from this repository (Blueprint `render.yaml`):
+
+- Dashboard and API: <https://suraksha-family.onrender.com>
+- The free instance spins down when idle; the first request after a pause can take
+  ~50 seconds.
+- `DEMO_MODE=0` there, so create a real account on the **Create account** tab; the
+  demo sign-in is hidden automatically.
+- Deploys are manual after a push: Render → the `suraksha-family` service →
+  **Manual Deploy → Deploy latest commit**.
+
 ### Android child app
 
 ```bash
@@ -102,8 +114,15 @@ standing consent.
 ## Testing over mobile data
 
 The APK defaults to `http://10.0.2.2:4000`, which only works from the Android emulator.
-To use a real phone on Wi-Fi or mobile data, give the app a public HTTPS URL at build
-time:
+Release builds of the child APK are published with the hosted API baked in:
+
+```bash
+cd android
+./gradlew assembleDebug -PdefaultServerUrl=https://suraksha-family.onrender.com
+```
+
+That APK works over Wi-Fi and mobile data with no LAN address or manual URL change.
+For a temporary tunnel instead of the hosted server:
 
 ```bash
 cloudflared tunnel --url http://localhost:4000
